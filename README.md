@@ -54,7 +54,7 @@
 这台 Mac 用 `uv`，直接：
 
 ```bash
-cd /Users/caiqianhu/Documents/Claudefile
+cd <本仓库目录>
 uv run --with pyserial python gui/servo_gui.py
 ```
 

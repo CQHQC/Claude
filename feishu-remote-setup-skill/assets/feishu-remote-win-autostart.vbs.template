@@ -1,0 +1,8 @@
+' 飞书远程操控 —— Windows 开机自启动器（隐藏窗口运行）
+' 用法：把本文件占位符替换后，放到「启动」文件夹：
+'   Win+R 输入  shell:startup  回车，把替换好的 .vbs 拖进去。
+' 替换：__UV_PATH__ = uv.exe 绝对路径； __WORKDIR__ = 项目目录绝对路径。
+Set sh = CreateObject("WScript.Shell")
+sh.CurrentDirectory = "__WORKDIR__"
+' 第二个参数 0 = 隐藏窗口；False = 不等待
+sh.Run """__UV_PATH__"" run python main.py", 0, False

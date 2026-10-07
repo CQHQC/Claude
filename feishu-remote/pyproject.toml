@@ -1,0 +1,9 @@
+[project]
+name = "feishu-remote"
+version = "0.1.0"
+description = "用手机通过飞书远程操控电脑：开软件、发文件、截屏、系统控制、自由 shell、AI 对话"
+requires-python = ">=3.11"
+dependencies = [
+    "lark-oapi>=1.4.0",
+    "openai>=1.40.0",
+]

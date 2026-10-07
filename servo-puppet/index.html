@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>舵机小人</title>
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#222; --mute:#777; --accent:#e8590c; --line:#ddd; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181d; --card:#20232a; --ink:#eee; --mute:#9aa; --accent:#ff922b; --line:#333; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 -apple-system,"PingFang SC",sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px 0; }
+  h1 { margin:0; font-size:20px; }
+  header p { margin:2px 0 0; color:var(--mute); font-size:13px; }
+  main { display:grid; grid-template-columns:minmax(300px,1fr) 340px; gap:16px; padding:16px 20px 24px; }
+  @media (max-width:760px){ main { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  canvas { width:100%; height:auto; display:block; touch-action:none; border-radius:8px; cursor:grab; }
+  .row { display:flex; align-items:center; gap:8px; margin:6px 0; }
+  .row label { width:92px; font-size:13px; flex:none; }
+  .row input[type=range] { flex:1; accent-color:var(--accent); }
+  .row output { width:38px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }
+  button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.rec { background:#d6336c; border-color:#d6336c; color:#fff; }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  h2 { font-size:14px; margin:14px 0 4px; }
+  h2:first-child { margin-top:0; }
+  textarea { width:100%; height:110px; font:12px/1.4 ui-monospace,Menlo,monospace; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .status { font-size:12px; color:var(--mute); margin-top:6px; min-height:1.4em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🤖 舵机小人</h1>
+  <p>拖动画布上的橙色关节,或用右边滑块;录一段动作、回放、导出成舵机指令。</p>
+</header>
+<main>
+  <section class="card">
+    <canvas id="cv" width="640" height="520"></canvas>
+    <div class="btns">
+      <button id="recBtn">● 录制</button>
+      <button id="playBtn" class="primary">▶ 回放</button>
+      <button id="loopBtn">循环:关</button>
+      <button id="centerBtn">全部居中</button>
+      <button id="waveBtn">挥手示例</button>
+    </div>
+    <div class="status" id="status">准备就绪</div>
+  </section>
+
+  <section class="card">
+    <h2>通道(0~180°)</h2>
+    <div id="sliders"></div>
+
+    <h2>导出指令</h2>
+    <textarea id="out" readonly placeholder="录制后点「导出」,这里会生成 SET,<ch>,<angle> 序列"></textarea>
+    <div class="btns">
+      <button id="exportBtn">导出</button>
+      <button id="copyBtn">复制</button>
+    </div>
+
+    <h2>连接真实舵机(可选)</h2>
+    <div class="btns" style="margin-top:4px">
+      <button id="serialBtn">连接串口 (Chrome)</button>
+    </div>
+    <div class="status" id="serialStatus">未连接。连接后拖动会实时发 SET 指令给 Arduino(115200)。</div>
+  </section>
+</main>
+
+<script>
+const NAMES = ["CH0 底座倾斜","CH1 肩","CH2 肘","CH3 腕","CH4 夹爪","CH5 小旗"];
+const angles = [90,90,90,90,90,90];
+const LINKS = [46,120,95,55];            // CH0..CH3 连杆长度
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const BASE = {x:320, y:440};
+const $ = id => document.getElementById(id);
+
+/* ---------- UI: sliders ---------- */
+const sliderEls = [];
+NAMES.forEach((n,i)=>{
+  const row = document.createElement("div"); row.className="row";
+  row.innerHTML = `<label>${n}</label><input type="range" min="0" max="180" value="90"><output>90°</output>`;
+  const rng = row.querySelector("input"), out = row.querySelector("output");
+  rng.oninput = () => setAngle(i, +rng.value, true);
+  sliderEls.push({rng,out});
+  $("sliders").appendChild(row);
+});
+
+/* ---------- state ---------- */
+let rec = null, playing = false, loop = false, tape = [];
+function setAngle(i, a, user){
+  a = Math.max(0, Math.min(180, Math.round(a)));
+  if (angles[i] === a) return;
+  angles[i] = a;
+  sliderEls[i].rng.value = a; sliderEls[i].out.textContent = a+"°";
+  if (user && playing) stopPlay();
+  if (rec) rec.push({t:performance.now()-rec.t0, i, a});
+  sendSerial(i, a);
+  draw();
+}
+
+/* ---------- kinematics ---------- */
+// 角度 90 = 竖直向上;每个关节在父级累计旋转上再加 (a-90)°
+function chain(){
+  const pts = [], cum = [];
+  let x = BASE.x, y = BASE.y, th = 0;
+  for (let k=0;k<4;k++){
+    th += angles[k]-90;
+    pts.push({x,y});                     // 关节 k 的枢轴
+    cum.push(th);
+    const r = th*Math.PI/180;
+    x += Math.sin(r)*LINKS[k]; y -= Math.cos(r)*LINKS[k];
+  }
+  return {pts, cum, tip:{x,y}, thTip:th};
+}
+
+/* ---------- draw ---------- */
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function draw(){
+  const ink = css("--ink"), accent = css("--accent"), line = css("--line");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // 地面
+  ctx.fillStyle = css("--bg"); ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.strokeStyle = line; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(40,BASE.y+34); ctx.lineTo(600,BASE.y+34); ctx.stroke();
+  // 底座
+  ctx.fillStyle = ink; ctx.beginPath(); ctx.roundRect(BASE.x-60,BASE.y+4,120,30,8); ctx.fill();
+  // 小旗 CH5
+  const fl = (angles[5]-90)*Math.PI/180;
+  ctx.save(); ctx.translate(BASE.x-44, BASE.y+4); ctx.rotate(fl);
+  ctx.strokeStyle = ink; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-60); ctx.stroke();
+  ctx.fillStyle = "#d6336c"; ctx.beginPath(); ctx.moveTo(0,-60); ctx.lineTo(34,-50); ctx.lineTo(0,-40); ctx.fill();
+  ctx.restore();
+
+  const c = chain();
+  // 连杆
+  ctx.lineCap = "round";
+  const widths = [18,16,13,10];
+  for (let k=0;k<4;k++){
+    const a = c.pts[k], b = k<3 ? c.pts[k+1] : c.tip;
+    ctx.strokeStyle = ink; ctx.lineWidth = widths[k];
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  // 夹爪 CH4:0=合拢 180=最大张开
+  const open = (angles[4]/180)*38;
+  ctx.save(); ctx.translate(c.tip.x,c.tip.y); ctx.rotate(c.thTip*Math.PI/180);
+  ctx.strokeStyle = ink; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(-open,-4); ctx.lineTo(-open,-34); ctx.moveTo(open,-4); ctx.lineTo(open,-34);
+  ctx.moveTo(-open,-4); ctx.lineTo(open,-4); ctx.stroke();
+  ctx.restore();
+  // 关节手柄
+  c.pts.forEach((p,k)=>{
+    ctx.fillStyle = (drag===k) ? "#fff" : accent;
+    ctx.strokeStyle = ink; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(p.x,p.y,11,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = ink; ctx.font = "11px sans-serif"; ctx.textAlign="center";
+    ctx.fillText("CH"+k, p.x, p.y-18);
+  });
+}
+
+/* ---------- drag joints ---------- */
+let drag = -1;
+function pos(e){
+  const r = cv.getBoundingClientRect();
+  return {x:(e.clientX-r.left)*cv.width/r.width, y:(e.clientY-r.top)*cv.height/r.height};
+}
+cv.addEventListener("pointerdown", e=>{
+  const p = pos(e), c = chain();
+  let best=-1, bd=26;
+  c.pts.forEach((q,k)=>{ const d=Math.hypot(q.x-p.x,q.y-p.y); if(d<bd){bd=d;best=k;} });
+  if (best>=0){ drag=best; cv.setPointerCapture(e.pointerId); cv.style.cursor="grabbing"; draw(); }
+});
+cv.addEventListener("pointermove", e=>{
+  if (drag<0) return;
+  const p = pos(e), c = chain();
+  const piv = c.pts[drag];
+  const phi = Math.atan2(p.x-piv.x, -(p.y-piv.y))*180/Math.PI;   // 相对竖直向上
+  const parent = drag>0 ? c.cum[drag-1] : 0;
+  let a = phi - parent + 90;
+  a = ((a+180)%360+360)%360 - 180;      // 归一化到 [-180,180)
+  if (a > 180) a -= 360;
+  setAngle(drag, Math.max(0, Math.min(180, a)), true);
+});
+const endDrag = ()=>{ drag=-1; cv.style.cursor="grab"; draw(); };
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", endDrag);
+
+/* ---------- record / play ---------- */
+function setStatus(s){ $("status").textContent = s; }
+$("recBtn").onclick = ()=>{
+  if (rec){
+    const events = rec; rec = null;
+    tape = {start: events.start, events, dur: performance.now()-events.t0};
+    $("recBtn").textContent = "● 录制"; $("recBtn").classList.remove("rec");
+    setStatus(`录好了:${events.length} 个动作,${(tape.dur/1000).toFixed(1)} 秒`);
+  } else {
+    stopPlay();
+    rec = []; rec.t0 = performance.now(); rec.start = angles.slice();
+    $("recBtn").textContent = "■ 停止录制"; $("recBtn").classList.add("rec");
+    setStatus("录制中… 拖动关节吧");
+  }
+};
+let raf = 0;
+function stopPlay(){ playing=false; cancelAnimationFrame(raf); $("playBtn").textContent="▶ 回放"; }
+$("playBtn").onclick = ()=>{
+  if (playing){ stopPlay(); return; }
+  if (rec) $("recBtn").click();
+  if (!tape.events || !tape.events.length){ setStatus("还没有录制内容"); return; }
+  playing = true; $("playBtn").textContent = "■ 停止";
+  const run = ()=>{
+    tape.start.forEach((a,i)=>setAngle(i,a));
+    const t0 = performance.now(); let n = 0;
+    const tick = ()=>{
+      if (!playing) return;
+      const t = performance.now()-t0;
+      while (n<tape.events.length && tape.events[n].t<=t){ const ev=tape.events[n++]; setAngle(ev.i, ev.a); }
+      if (n>=tape.events.length && t>=tape.dur){
+        if (loop) return run();
+        stopPlay(); setStatus("回放结束"); return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+  };
+  setStatus("回放中…"); run();
+};
+$("loopBtn").onclick = ()=>{ loop=!loop; $("loopBtn").textContent = "循环:"+(loop?"开":"关"); };
+$("centerBtn").onclick = ()=>{ stopPlay(); for(let i=0;i<6;i++) setAngle(i,90); };
+$("waveBtn").onclick = ()=>{            // 内置示例:抬臂 + 腕部挥动
+  stopPlay();
+  const ev = []; let t = 0;
+  ev.push({t:0,i:1,a:60},{t:0,i:2,a:130},{t:0,i:4,a:150});
+  for (let k=0;k<8;k++){ t += 250; ev.push({t, i:3, a: k%2? 50:130}, {t, i:5, a: k%2? 60:120}); }
+  tape = {start:[90,90,90,90,90,90], events:ev, dur:t+300};
+  setStatus("已载入挥手示例,点「回放」或「导出」");
+};
+
+/* ---------- export ---------- */
+$("exportBtn").onclick = ()=>{
+  if (!tape.events || !tape.events.length){ $("out").value = "# 还没有录制内容"; return; }
+  const lines = ["# 舵机小人导出 · 协议:SET,<ch>,<angle>  # 前面是相对时间(ms)"];
+  tape.start.forEach((a,i)=>lines.push(`0 SET,${i},${a}`));
+  tape.events.forEach(e=>lines.push(`${Math.round(e.t)} SET,${e.i},${e.a}`));
+  $("out").value = lines.join("\n");
+};
+$("copyBtn").onclick = async ()=>{
+  try { await navigator.clipboard.writeText($("out").value); setStatus("已复制"); }
+  catch { $("out").select(); document.execCommand("copy"); setStatus("已复制"); }
+};
+
+/* ---------- Web Serial(可选) ---------- */
+let writer = null, lastSent = {}, pending = {}, timer = 0;
+$("serialBtn").onclick = async ()=>{
+  if (!("serial" in navigator)){ $("serialStatus").textContent = "此浏览器不支持 Web Serial,请用 Chrome / Edge。"; return; }
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({baudRate:115200});
+    writer = port.writable.getWriter();
+    $("serialStatus").textContent = "已连接。Arduino 复位约需 2 秒,稍等再拖动。";
+    $("serialBtn").textContent = "已连接";
+  } catch(e){ $("serialStatus").textContent = "连接失败:" + e.message; }
+};
+function sendSerial(i,a){
+  if (!writer) return;
+  pending[i] = a;
+  if (timer) return;
+  timer = setTimeout(async ()=>{            // 节流 ~40Hz,每通道只发最新值
+    timer = 0;
+    const enc = new TextEncoder();
+    for (const k in pending){
+      if (lastSent[k] === pending[k]) continue;
+      lastSent[k] = pending[k];
+      try { await writer.write(enc.encode(`SET,${k},${pending[k]}\n`)); } catch {}
+    }
+    pending = {};
+  }, 25);
+}
+
+draw();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>
+</body>
+</html>

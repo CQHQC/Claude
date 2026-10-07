@@ -1,0 +1,28 @@
+# 复制本文件为 config.toml 并填入你的信息
+# cp config.example.toml config.toml
+
+# 飞书自建应用的凭证（开发者后台 → 凭证与基础信息）
+app_id = "cli_xxxxxxxxxxxxxxxx"
+app_secret = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# 白名单：只有这些 open_id 能触发命令。
+# 留空 [] 时，你第一次给机器人发消息，它会回复你自己的 open_id，
+# 把它填到这里再重启即可。别人发消息一律忽略。
+allowed_open_ids = []
+
+# shell 命令执行的工作目录（默认家目录）和超时秒数
+work_dir = "~"
+shell_timeout = 60
+
+# —— AI（可选）——
+# 填入 API key 后，发给机器人的「非斜杠自然语言」会交给大模型：
+# 它能回答问题，或听懂人话去调用电脑操作工具（开软件/执行命令/截屏/发文件/系统控制）。
+# 留空则不启用，自然语言按 shell 命令执行（旧行为）。
+#
+# 默认用 DeepSeek（国内直连、便宜、支持工具调用）：
+#   1. 去 https://platform.deepseek.com 注册并创建 API key
+#   2. 填到 ai_api_key
+# 想换别的 OpenAI 兼容模型，改 ai_base_url + ai_model 即可（如通义/Kimi/本地 ollama）。
+ai_api_key = ""
+ai_base_url = "https://api.deepseek.com"
+ai_model = "deepseek-chat"

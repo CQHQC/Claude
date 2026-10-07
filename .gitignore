@@ -1,0 +1,10 @@
+# 密钥 / 本地配置
+feishu-remote/config.toml
+.claude/settings.local.json
+
+# 环境与缓存
+.venv/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
